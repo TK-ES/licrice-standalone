@@ -1,1 +1,1 @@
-from . import utils, velocity  # noqa: F401
+from . import radius, utils, velocity  # noqa: F401  # NEW

@@ -1,26 +1,14 @@
-"""IBTrACS preprocessing for LICRICE.
-
-Converts a raw IBTrACS netCDF file (e.g. IBTrACS.ALL.v04r01.nc) into the
-intermediate zarr format expected by licrice's preprocess.load_tracks / _clean_ibtracs.
-
-The output zarr has dimensions (storm, time) with integer indices and variables:
-  latstore, longstore, v_circular, v_total, datetime, pstore (hPa),
-  rmstore_estimated (km), storm_radius_estimated (km), sid, season
-
-This matches the format produced by coastal-core-main's
-`pyTC.io.tracks.ibtracs.format_clean` + `pyTC.tracks.radius.estimate_radii`.
-The radius estimation here uses physics-based formulas rather than a random forest.
-"""
-
 import numpy as np
+import requests
 import xarray as xr
+from bs4 import BeautifulSoup
 
-from licrice.tracks import velocity as vel
+from licrice import tracks, utilities
+from licrice.tracks import radius as _radius  # NEW
 
-# ---------------------------------------------------------------------------
-# Agency wind-averaging-period table
-# Source: IBTrACS v4 Technical Details (WMO_TD_1555_en.pdf)
-# ---------------------------------------------------------------------------
+# constructed using:
+# https://www.ncdc.noaa.gov/ibtracs/pdf/IBTrACS_version4_Technical_Details.pdf
+# unless specified in Table 3 use 10 min averaging period (para 2 of Section 2.2)
 AGENCY_AVERAGING_PERIOD = {
     "usa": 1,
     "cma": 2,
@@ -38,311 +26,545 @@ AGENCY_AVERAGING_PERIOD = {
     "mlc": 1,
 }
 
-# Divisor to convert X-minute average to 1-minute average
-# (from WMO recommendations; see pyTC.tracks.velocity.AVERAGING_PERIOD_CONVERSION_DIVISOR)
-_AVG_PERIOD_DIVISOR = {1: 1.0, 2: 0.96, 3: 0.92, 10: 0.88}
 
-_NM_TO_KM = 1.852       # nautical miles → km
-_KTS_TO_MS = 0.514444   # knots → m/s
-
-
-# ---------------------------------------------------------------------------
-# Physics-based radius estimation
-# ---------------------------------------------------------------------------
-
-def estimate_rmw_climada(pres_hpa):
-    """Estimate RMW (km) from central pressure using CLIMADA piecewise model.
-
-    Borrowed from climada_python/climada/hazard/tc_tracks.py.
+def download(url, outdir):
+    """Download ibtracs and save files to a specified location.
 
     Parameters
     ----------
-    pres_hpa : array-like
-        Central pressure in hPa. NaN-safe.
+    url : str
+        Base URL to the IBTrACS file listing.
+    outdir : str or Path
+        Directory to save downloaded files.
+
     """
-    pres_l = [872, 940, 980, 1021]
-    rmw_l = [14.907318, 15.726927, 25.742142, 56.856522]
-    ermw = pres_hpa * 0  # preserve NaN structure
-    for i, p_i in enumerate(pres_l):
-        s0 = 1.0 / (p_i - pres_l[i - 1]) if i > 0 else 0.0
-        s1 = 1.0 / (pres_l[i + 1] - p_i) if i + 1 < len(pres_l) else 0.0
-        ermw += rmw_l[i] * np.fmax(
-            0,
-            1 - s0 * np.fmax(0, p_i - pres_hpa) - s1 * np.fmax(0, pres_hpa - p_i),
-        )
-    return ermw
+    import pathlib
+
+    outdir = pathlib.Path(outdir)
+    download_url = requests.get(url)
+    soup = BeautifulSoup(download_url.text, features="html.parser")
+    links = soup.findAll("a")
+
+    for link in links:
+        if ".nc" in link["href"] or ".txt" in link["href"]:
+            loc = outdir / str(link["href"])
+            print(f"Downloading {link['href']} to {loc}")
+            with loc.open("wb") as f:
+                f.write(requests.get(url + link["href"]).content)
 
 
-def estimate_rmw_licrice(v_circular_ms, lat_deg):
-    """Estimate RMW (km) from circular wind speed and latitude (LICRICE formula).
+def format_standard(
+    _ds,
+    agency_pref=[
+        "wmo",
+        "usa",
+        "tokyo",
+        "newdelhi",
+        "reunion",
+        "bom",
+        "nadi",
+        "wellington",
+        "cma",
+        "hko",
+        "ds824",
+        "td9636",
+        "td9635",
+        "neumann",
+        "mlc",
+    ],
+    ibt_storm_meta=[
+        "numobs",
+        "sid",
+        "season",
+        "basin",
+        "subbasin",
+        "name",
+        "number",
+        "nature",
+        "track_type",
+        "main_track_sid",
+        "dist2land",
+        "iflag",
+        "storm_speed",
+    ],
+):
+    """Reformat ibtracs track dataset with standard track dataset conventions.
 
     Parameters
     ----------
-    v_circular_ms : array-like
-        Maximum circular wind speed in m/s.
-    lat_deg : array-like
-        Latitude in degrees.
-    """
-    return 63.273 - 0.8683 * v_circular_ms + 1.07 * np.abs(lat_deg)
-
-
-# ---------------------------------------------------------------------------
-# Main preprocessing function
-# ---------------------------------------------------------------------------
-
-def format_ibtracs(raw_ds, params):
-    """Convert a raw IBTrACS xarray.Dataset to the licrice intermediate format.
-
-    Parameters
-    ----------
-    raw_ds : xarray.Dataset
-        Loaded from ``xr.open_dataset('IBTrACS.ALL.v04r01.nc')``.
-        Expected dimensions: storm, date_time.  Expected coordinates: time (datetime),
-        lat, lon.
-    params : dict
-        LICRICE params dict (loaded from params/licrice/v1.1.json).
-        Uses ``params["ibtracs"]["missing_roci_fill_km"]`` (default 400).
+    _ds : :py:class:`xarray.Dataset`
+        ibtracs tracks dataset
+    agency_pref : list of strings, optional
+        agency preference order for filling missing data. Note: the code is
+        written such that wmo is automatically the preferred data and usa data
+        is second best.
+    ibt_storm_meta : list of strings, optional
+        non essential data variables to perserve in newly formatted trackset
 
     Returns
     -------
-    xarray.Dataset
-        Dimensions: storm (int index), time (int index 0..date_time-1).
-        Variables: latstore, longstore, v_circular, v_total, datetime,
-                   pstore (hPa), rmstore_estimated (km), storm_radius_estimated (km),
-                   sid (str), season (uint16).
-        Units attributes are set on pstore, rmstore_estimated,
-        storm_radius_estimated so that _clean_ibtracs() assertions pass.
+    :py:class:`xarray.Dataset`
+        ibtracs tracks dataset reformatted like emanuel tracks dataset
+
     """
-    missing_roci_fill = params.get("ibtracs", {}).get("missing_roci_fill_km", 400.0)
+    ###########################################################################
+    # Setup
 
-    # ------------------------------------------------------------------ #
-    # 1. Determine USA agency aliases for wind averaging-period lookup
-    # ------------------------------------------------------------------ #
-    usa_agency_raw = raw_ds.usa_agency.values  # (storm, date_time), bytes |S32
-    usa_agencies = set(usa_agency_raw.astype("U32").ravel()) - {""}
-    usa_agencies.add("atcf")  # explicit extra alias mentioned in coastal-core
+    ds = _ds.copy()
 
-    # ------------------------------------------------------------------ #
-    # 2. Build per-observation wind conversion factor (X-min → 1-min)
-    # ------------------------------------------------------------------ #
-    wmo_agency_raw = raw_ds.wmo_agency.values  # (storm, date_time), bytes |S19
-    wmo_agency_str = wmo_agency_raw.astype("U19")  # decode to unicode in-place
+    # assign coords
+    ds.coords["storm"] = ds.storm
+    ds.coords["date_time"] = ds.date_time
 
-    # Default: assume 10-minute averaging (conservative; applies to most non-US basins)
-    factors = np.full(wmo_agency_str.shape, 1.0 / _AVG_PERIOD_DIVISOR[10], dtype=np.float32)
+    # find wmo agencies that correspond to usa_* vars
+    # ATCF is explicitly added b/c of a bug that appears at least in the IN
+    # set as of Mar 2024, where atcf is listed as wmo agency for one storm but
+    # hurdat_atl listed for usa_agency
+    usa_agencies = list(set([b"atcf"] + list(np.unique(ds.usa_agency))))
+    usa_agencies.remove(b"")
 
-    # Apply known agency averaging periods
-    for agency, period in AGENCY_AVERAGING_PERIOD.items():
-        mask = wmo_agency_str == agency
-        factors[mask] = 1.0 / _AVG_PERIOD_DIVISOR[period]
-
-    # Override with 1-minute for any USA alias (e.g., 'hurdat_atl', 'jtwc', 'atcf')
-    for ua in usa_agencies:
-        mask = wmo_agency_str == ua
-        factors[mask] = 1.0  # already 1-minute
-
-    # Unknown / empty agency → keep 10-min default (already set above)
-
-    # ------------------------------------------------------------------ #
-    # 3. Pool wind speed (kts, 1-min sustained)
-    # ------------------------------------------------------------------ #
-    wmo_wind = raw_ds.wmo_wind.values * factors  # kts, 1-min
-    usa_wind = raw_ds.usa_wind.values            # kts, 1-min (always)
-    wind_1min_kts = np.where(np.isnan(wmo_wind), usa_wind, wmo_wind)
-    v_total_ms = (wind_1min_kts * _KTS_TO_MS).astype(np.float32)
-    v_total_ms[v_total_ms < 0] = np.nan
-
-    # ------------------------------------------------------------------ #
-    # 4. Pool pressure (hPa)
-    # ------------------------------------------------------------------ #
-    pres_hpa = raw_ds.wmo_pres.values.copy()
-    usa_pres = raw_ds.usa_pres.values
-    pres_hpa = np.where(np.isnan(pres_hpa), usa_pres, pres_hpa).astype(np.float32)
-
-    # ------------------------------------------------------------------ #
-    # 5. Pool RMW (nautical miles → km)
-    # ------------------------------------------------------------------ #
-    rmw_nm = raw_ds.usa_rmw.values.copy()
-    for vname in ["reunion_rmw", "bom_rmw"]:
-        if vname in raw_ds.data_vars:
-            rmw_nm = np.where(np.isnan(rmw_nm), raw_ds[vname].values, rmw_nm)
-    rmw_km = (rmw_nm * _NM_TO_KM).astype(np.float32)
-    rmw_km[rmw_km < 0] = np.nan
-
-    # ------------------------------------------------------------------ #
-    # 6. Pool ROCI (nautical miles → km)
-    # ------------------------------------------------------------------ #
-    roci_nm = raw_ds.usa_roci.values.copy()
-    for vname in ["bom_roci", "td9635_roci"]:
-        if vname in raw_ds.data_vars:
-            roci_nm = np.where(np.isnan(roci_nm), raw_ds[vname].values, roci_nm)
-    roci_km = (roci_nm * _NM_TO_KM).astype(np.float32)
-    roci_km[roci_km < 0] = np.nan
-
-    # ------------------------------------------------------------------ #
-    # 7. Standardize coordinates and create dataset
-    # ------------------------------------------------------------------ #
-    n_storms, n_times = raw_ds.sizes["storm"], raw_ds.sizes["date_time"]
-
-    lat = raw_ds.lat.values.astype(np.float32)   # (storm, date_time)
-    lon = raw_ds.lon.values.astype(np.float32)   # (storm, date_time)
-    lon = ((lon + 180) % 360) - 180              # normalize to [-180, 180]
-
-    # The IBTrACS "time" coordinate holds datetime values; rename date_time → time
-    datetime_vals = raw_ds.time.values  # (storm, date_time), datetime64[ns]
-    # Round to second precision (coastal-core-main: newds["time"] = newds.time.dt.round("s"))
-    # This fixes sub-second offsets in IBTrACS timestamps that cause interp boundary issues.
-    datetime_ns = datetime_vals.astype("datetime64[ns]")
-    nat_mask = np.isnat(datetime_ns)
-    sec = np.where(
-        nat_mask,
-        np.iinfo(np.int64).min,
-        (datetime_ns.astype(np.int64) + 500_000_000) // 1_000_000_000,
-    )
-    datetime_ns = sec.astype("datetime64[s]").astype("datetime64[ns]")
-
-    sids_str = np.array(
-        [s.decode("utf-8").strip() if isinstance(s, bytes) else str(s).strip()
-         for s in raw_ds.sid.values],
-        dtype=object,
-    )
-    seasons = raw_ds.season.values.astype(np.uint16)
-
-    ds = xr.Dataset(
-        {
-            "latstore": (["storm", "time"], lat),
-            "longstore": (["storm", "time"], lon),
-            "v_total": (["storm", "time"], v_total_ms, {"units": "m/s"}),
-            "pstore": (["storm", "time"], pres_hpa, {"units": "hPa"}),
-            "rmstore": (["storm", "time"], rmw_km, {"units": "km"}),
-            "storm_radius": (["storm", "time"], roci_km, {"units": "km"}),
-            "datetime": (["storm", "time"], datetime_ns),
-            "sid": (["storm"], sids_str),
-            "season": (["storm"], seasons),
-        },
+    # construct new dataset to populate with ibtracs info with standard trackset
+    # stucture
+    newds = xr.Dataset(
+        data_vars=ds[ibt_storm_meta],
         coords={
-            "storm": np.arange(n_storms),
-            "time": np.arange(n_times),
+            "date_time": np.arange(len(ds.coords["date_time"])),
+            "storm": np.arange(len(ds.coords["storm"])),
         },
     )
 
-    # ------------------------------------------------------------------ #
-    # 8. Drop storms with < 2 valid wind observations
-    # ------------------------------------------------------------------ #
-    n_valid = (ds.v_total.notnull() & ds.latstore.notnull()).sum("time")
-    ds = ds.isel(storm=(n_valid >= 2).values)
+    ###########################################################################
+    # fix slightly off timestamps
+    newds["time"] = newds.time.dt.round("s")
 
-    # ------------------------------------------------------------------ #
-    # 9. Drop time slots with NaT datetime, then interpolate interior NaN
-    #    values using datetime as the coordinate (matches coastal-core-main
-    #    format_clean: dropna on datetime + interpolate_nans(use_coordinate="datetime"))
-    # ------------------------------------------------------------------ #
-    _vars_to_interp = ["latstore", "longstore", "v_total", "pstore", "rmstore", "storm_radius"]
-    ds = ds.set_coords("datetime")
-    storm_list = []
-    for i in range(ds.sizes["storm"]):
-        storm_i = ds.isel(storm=i).dropna(dim="time", subset=["datetime"])
-        for var in _vars_to_interp:
-            attrs = storm_i[var].attrs.copy()
-            storm_i[var] = (
-                storm_i[var]
-                .interpolate_na(dim="time", use_coordinate="datetime")
-                .ffill("time")   # fill leading NaN (not handled by interpolate_na)
-                .bfill("time")   # fill trailing NaN
+    ###########################################################################
+    # decode string variables of interest if they are preserved
+    for dv in [
+        dv
+        for dv in [
+            "name",
+            "main_track_sid",
+            "sid",
+            "usa_agency",
+            "iflag",
+            "nature",
+            "usa_atcf_id",
+            "subbasin",
+            "basin",
+        ]
+        if dv in ibt_storm_meta
+    ]:
+        newds[dv] = newds[dv].str.decode("utf-8")
+
+    ###########################################################################
+    # Convert all wind variables to the same averaging period
+
+    # access conversion factor based on agency and global dictionaries
+    def get_averaging_period_conversion_divisor(x):
+        return (
+            float(
+                tracks.velocity.AVERAGING_PERIOD_CONVERSION_DIVISOR[
+                    AGENCY_AVERAGING_PERIOD[x.decode()]
+                ],
             )
-            storm_i[var].attrs.update(attrs)
-        storm_list.append(storm_i.reset_coords("datetime"))
-    ds = xr.concat(storm_list, dim="storm", join="outer")
+            if x
+            else np.nan
+        )
 
-    # ------------------------------------------------------------------ #
-    # 10. Calculate translational and circular velocity
-    # ------------------------------------------------------------------ #
-    ds = vel.calculate_v_trans_x_y(ds, lat_var="latstore", lon_var="longstore")
-    ds = vel.calculate_v_circular(ds, lat_var="latstore", lon_var="longstore")
+    wind_units = ds.wmo_wind.units
+    ds["wmo_wind"] = ds["wmo_wind"] / xr.apply_ufunc(
+        get_averaging_period_conversion_divisor,
+        ds.wmo_agency.where(~np.isin(ds.wmo_agency, usa_agencies), b"usa"),
+        vectorize=True,
+    )
+    ds.wmo_wind.attrs.update(units=wind_units)
 
-    # Drop storms where circular wind never exceeds 0
-    ds = ds.isel(storm=(ds.v_circular.max("time") > 0).values)
+    for agency in agency_pref:
+        if agency != "wmo":
+            wind_units = ds[agency + "_wind"].units
+            ds[agency + "_wind"] = ds[
+                agency + "_wind"
+            ] / get_averaging_period_conversion_divisor(agency.encode())
+            ds[agency + "_wind"].attrs.update(units=wind_units)
 
-    # ------------------------------------------------------------------ #
-    # 11. Estimate missing radii (physics-based; no random forest)
-    # ------------------------------------------------------------------ #
-    # RMW: use observed, fill with pressure-based then lat/wind-based estimate
-    rmw_est_climada = estimate_rmw_climada(ds.pstore)  # km, xr.DataArray
-    rmw_est_licrice = estimate_rmw_licrice(ds.v_circular, ds.latstore)  # km
-    rmw_est = rmw_est_climada.fillna(rmw_est_licrice).clip(min=1.0)
-    # Fill rmw: observed → climada estimate → licrice estimate.
-    # Then ffill/bfill within the valid obs window so that leading/trailing
-    # NaN (e.g. first obs missing pressure AND wind) get filled from neighbours.
-    # Finally mask trailing NaT slots so they are not confused with valid obs.
-    ds["rmstore_estimated"] = (
-        ds.rmstore.fillna(rmw_est)
-        .where(ds.datetime.notnull())
-        .ffill("time")
-        .bfill("time")
-        .clip(min=1.0)
-        .astype(np.float32)
+    ###########################################################################
+    # Create DataArrays of preferred values for each storm x time observation.
+    # Wherever available first try to use the wmo value, then try to use the
+    # wmo agency value, then use the usa agency value, then refer to the agency
+    # preference list as supplied by the function caller.
+
+    # pool data from all agencies
+    pref_vals = {}
+    for v in ["wind", "pres", "rmw", "roci"]:
+        all_vals = ds[
+            [f"{i}_{v}" for i in agency_pref if f"{i}_{v}" in list(ds.data_vars)]
+        ]
+
+        # ensure all units match up and set up starting val_pref (nan if no wmo_* value)
+        for dv in all_vals.data_vars:
+            assert ds["usa_" + v].units.lower() == ds[dv].units.lower()
+        if v in ["wind", "pres"]:
+            assert ds["usa_" + v].units.lower() == ds["wmo_" + v].units.lower()
+            val_pref = ds[f"wmo_{v}"].copy().rename(v)
+        else:
+            val_pref = ds[f"usa_{v}"].copy().rename(v) * np.nan
+
+        # remove the suffix in agency and convert to array
+        all_vals = all_vals.rename(
+            {x: x.split("_")[0] for x in all_vals.variables if x != "date_time"},
+        )
+        all_vals = all_vals.to_array(dim="agency")
+
+        names = (
+            ds.wmo_agency.where(~ds.wmo_agency.isin(usa_agencies), "usa")
+            .astype(str)
+            .copy()
+        )
+
+        # first update any null values with their reporting agency preference
+        for a in all_vals.agency:
+            val_pref = val_pref.where(
+                (names != a) | val_pref.notnull(),
+                all_vals.sel(agency=a),
+            )
+
+        # sometimes there will be intermediate time step data reported from the
+        # preferred agency that is not in the wmo reported values (and thus for these
+        # datetimes, there is no wmo_agency value). Here we choose the "most popular"
+        # agencies reporting for each storm and use their values to fill in the
+        # intermediate times in wmo_wind. For each round of "next most popular agency",
+        # we perform interpolation (using fractional change in the filler value combined
+        # with levels of the pre-fill value b/c we don't want to be bouncing back and
+        # forth between different agencies since this could cause oscillations in wind
+        # size that are not physical
+        counts = (names == all_vals.agency).sum("date_time")
+
+        n_agencies = (counts > 0).sum("agency")
+        valid = xr.ones_like(n_agencies)
+        main_agency = "dummy"
+
+        # first fill with the reporting agency for that track
+        for i in range(n_agencies.max().item()):
+            valid = valid & (n_agencies > i) & (counts.agency != main_agency)
+            main_agency = counts.where(valid).idxmax(dim="agency")
+            filler = all_vals.sel(
+                agency=main_agency.where(
+                    main_agency.notnull(),
+                    all_vals.agency.values[0],
+                ),
+            ).where(main_agency.notnull())
+            val_pref = utilities.smooth_fill(
+                val_pref,
+                filler,
+                time_dim="date_time",
+                interpolate=True,
+            )
+            names = names.where((names != "") | val_pref.isnull(), main_agency)
+
+        # next fill with preferred agencies
+        for i in all_vals.agency.values:
+            val_pref = utilities.smooth_fill(
+                val_pref,
+                all_vals.sel(agency=i),
+                time_dim="date_time",
+                interpolate=True,
+            )
+
+        # check no infinites in prefered vals
+        assert (np.abs(val_pref) != np.inf).any(dim="date_time").all()
+
+        # add to dict (drop added variable if present)
+        try:
+            pref_vals[v] = val_pref.drop_vars(["agency"])
+        except ValueError:
+            pref_vals[v] = val_pref
+
+    ###########################################################################
+    # assign total windspeed to v_total
+
+    newds["v_total"] = utilities.convert_units(
+        pref_vals["wind"],
+        (ds.wmo_wind.units.lower(), "m/s"),
     )
 
-    # ROCI: use observed, fill remainder with the fixed fallback value,
-    # then mask trailing NaT slots (same rationale as rmstore_estimated).
-    ds["storm_radius_estimated"] = (
-        ds.storm_radius.fillna(missing_roci_fill)
-        .where(ds.datetime.notnull())
-        .astype(np.float32)
+    newds["v_total"] = newds.v_total.where(newds.v_total >= 0)
+
+    newds["v_total"].attrs.update(
+        {
+            "long_name": "maximum total windspeed",
+            "units": "m/s",
+            "description": (
+                "maximum 1-minute sustained windspeed, including "
+                "translational and rotational components"
+            ),
+            "method": "IBTrACS *_wind (NaNs are filled based on agency preference)",
+        },
     )
 
-    # Ensure ROCI >= RMW everywhere
-    ds["storm_radius_estimated"] = xr.concat(
-        [ds.storm_radius_estimated, ds.rmstore_estimated], dim="_var"
-    ).max("_var")
+    ###########################################################################
+    # assign pressure to pstore
 
-    # Clip negative estimated values (shouldn't occur, but safety check)
-    ds["rmstore_estimated"] = ds.rmstore_estimated.clip(min=1.0)
-    ds["storm_radius_estimated"] = ds.storm_radius_estimated.clip(min=1.0)
+    newds["pstore"] = utilities.convert_units(
+        pref_vals["pres"],
+        (ds.wmo_pres.units.lower(), "hPa"),
+    )
 
-    # Set units attributes required by _clean_ibtracs assertions
-    ds["rmstore_estimated"].attrs["units"] = "km"
-    ds["storm_radius_estimated"].attrs["units"] = "km"
-    ds["pstore"].attrs["units"] = "hPa"
+    newds["pstore"].attrs.update(
+        {
+            "long_name": "Minimum central pressure",
+            "units": "hPa",
+            "description": "Minimum central pressure",
+            "method": "IBTrACS *_pres (NaNs are filled based on agency preference)",
+        },
+    )
+
+    ###########################################################################
+    # assign radius of max winds to rmstore
+
+    newds["rmstore"] = utilities.convert_units(
+        pref_vals["rmw"],
+        (ds.usa_rmw.units.lower(), "km"),
+    )
+
+    newds["rmstore"] = newds.rmstore.where(newds.rmstore >= 0)
+
+    newds["rmstore"].attrs.update(
+        {
+            "long_name": "Radius of maximum winds",
+            "units": "km",
+            "description": "Radius of maximum winds",
+            "method": ("IBTrACS *_rmw (NaNs are filled based on agency preference)"),
+        },
+    )
+
+    ###########################################################################
+    # assign radius of last closed isobar to storm_radius
+
+    newds["storm_radius"] = utilities.convert_units(
+        pref_vals["roci"],
+        (ds.usa_roci.units.lower(), "km"),
+    )
+
+    newds["storm_radius"] = newds.storm_radius.where(newds.storm_radius >= 0)
+
+    newds["storm_radius"].attrs.update(
+        {
+            "long_name": "Radius of outermost closed isobar",
+            "units": "km",
+            "description": (
+                "Radius of outermost closed isobar, a measure of the "
+                "total radial extent of the storm"
+            ),
+            "method": ("IBTrACS *_roci (NaNs are filled based on agency preference)"),
+        },
+    )
+
+    ###########################################################################
+    # rename/set coordinates for standard conventions
+
+    newds["lon"] = ((ds.lon + 180) % 360) - 180
+    newds["lat"] = ds.lat
+
+    newds = newds.rename(
+        {
+            "time": "datetime",
+            "lon": "longstore",
+            "lat": "latstore",
+        },
+    ).rename(
+        {
+            "date_time": "time",
+        },
+    )
+
+    newds = newds.reset_coords(["datetime", "longstore", "latstore"])
+
+    newds.attrs.update(ds.attrs)
+
+    return newds
+
+
+def format_clean(ds):
+    """Reformat ibtracs track dataset for generalized use throughout system.
+
+    Parameters
+    ----------
+    ds : :py:class:`xarray.Dataset`
+        ibtracs tracks dataset
+
+    Returns
+    -------
+    ds : :py:class:`xarray.Dataset`
+        ibtracs tracks dataset formatted and cleaned
+
+    """
+    ds = format_standard(ds)
+
+    # drop stationary storms
+    ds, _ = tracks.utils.drop_stationary_storms(ds)
+
+    # mask all variables when leading and trailing v_total is nan
+    ds = tracks.utils.drop_leading_and_trailing_nans(ds)
+
+    # mask all variables when datetime is null
+    ds = tracks.utils.mask_invalid_values(ds)
+
+    # drop storms with missing max wind speed obs or with only one observation
+    ds, _, _ = tracks.utils.assess_var_missingness(ds)
+
+    # fill nans
+    ds = ds.set_coords("datetime")
+    ds = xr.concat(
+        [
+            tracks.utils.interpolate_nans(
+                ds.isel(storm=i).dropna(dim="time", subset=["datetime"]),
+                use_coordinate="datetime",
+            ).reset_coords("datetime", drop=False)
+            for i in range(len(ds.sid))
+        ],
+        dim="storm",
+    )
+
+    # calculate translational and circular velocity
+    ds = tracks.velocity.calculate_v_trans_x_y(ds, "latstore", "longstore")
+    ds = tracks.velocity.calculate_v_circular(ds)
+
+    # drop any storms that never show a circular velocity
+    ds = ds.isel(storm=ds.v_circular.max(dim="time") > 0)
+
+    # cast season var
+    ds["season"] = ds.season.astype(np.uint16)
+
+    # delete any manually found duplicates (first one in each list is kept)
+    # If using a non "ALL" ibtracs set where only one of the two duplicate SIDs is
+    # present, keep that storm
+    duplicate_storms = [
+        ["1961299N11281", "1961301N12279"],  # Hattie
+        ["1962292N11119", "1962298N08107"],  # Harriet
+        ["1963267N11309", "1963267N11308"],  # Edith
+        ["1963270N08327", "1963272N09314"],  # Flora
+        ["1977365S09188", "1978032S09187"],  # Bob
+        ["1995241N11333", "1995240N11337"],  # Luis
+        ["2017081S13152", "2017082S14152"],  # Debbie
+        ["2020092S09155", "2020094S10160"],  # Harold
+        ["2020019S25191", "2020017S14178"],  # Tino
+    ]
+    for storms in duplicate_storms:
+        to_drop = ds.sid.isel(storm=ds.sid.isin(storms))
+        if len(to_drop) == len(storms):
+            ds = ds.isel(storm=~(ds.sid.isin(storms[1:])))
+
+    # fix "BRENDAN" that should be "BRENDA"
+    # PAKA- should be PAKA
+    # unnamed 2018 WP storm should be Tropical Depression JOSIE
+    ds["name"] = (
+        ds.name.where(ds.sid != "1985268N03161", "BRENDA")
+        .where(ds.sid != "1997333N06194", "PAKA")
+        .where(ds.sid != "2018202N18116", "JOSIE")
+        .where(ds.sid != "2022342N09084", "MANDOUS")
+    )
+
+    # storms where one picks up where the other leaves off
+    combine_sid_groups = [
+        ["1991196N06153", "1991207N20105"],  # 1991 BRENDAN
+        ["2017122S13170", "2017131S27168"],  # 2017 DONNA
+    ]
+
+    ds = _combine_tracks(ds, combine_sid_groups)
+
+    # final formatting
+    for v in ["basin", "subbasin", "nature", "iflag", "track_type"]:
+        ds[v] = ds[v].where(ds[v].notnull(), "").astype("unicode")
+    ds["storm"] = np.arange(ds.storm.size)
 
     return ds
 
 
-def preprocess_ibtracs(nc_path, zarr_outpath, params, overwrite=False):
-    """Preprocess a raw IBTrACS netCDF file and save as zarr.
+def _combine_tracks(ds, sids_groups):
+    time_vars = [k for k, v in ds.data_vars.items() if "time" in v.dims]
+    other_vars = [k for k, v in ds.data_vars.items() if k not in time_vars]
 
-    The output zarr is in the intermediate format that licrice's load_tracks /
-    _clean_ibtracs expects.  Run this once before running run_licrice_on_trackset.
+    all_sids = [i for sublist in sids_groups for i in sublist]
+    ds_out = ds.isel(storm=~(ds.sid.isin(all_sids)))
 
-    Parameters
-    ----------
-    nc_path : str or Path
-        Path to the raw IBTrACS netCDF file.
-    zarr_outpath : str or Path
-        Destination zarr directory path.
-    params : dict
-        LICRICE params (from params/licrice/v1.1.json).
-    overwrite : bool, optional
-        If True, overwrite an existing zarr. Default False.
-    """
-    import pathlib
+    all_ds = [ds_out]
+    for sids in sids_groups:
+        if not np.isin(sids, ds.sid.values).all():
+            continue
 
-    zarr_outpath = pathlib.Path(zarr_outpath)
-    if zarr_outpath.exists() and not overwrite:
-        print(f"Preprocessed zarr already exists at {zarr_outpath}. Skipping.")
-        return
+        this_ds = ds.isel(storm=ds.sid.isin(sids)).copy()
 
-    print(f"Loading {nc_path} ...")
-    raw_ds = xr.open_dataset(str(nc_path))
+        stackable = this_ds[time_vars]
+        unstackable = this_ds[other_vars]
+        unstackable = unstackable.isel(
+            storm=unstackable.numobs.argmax(unstackable.numobs.dims[0]),
+        )
 
-    print("Preprocessing IBTrACS tracks ...")
-    ds = format_ibtracs(raw_ds, params)
+        stacked = stackable.stack(tmp=["time", "storm"])
+        stacked = stacked.sel(tmp=stacked.datetime.notnull()).sortby("datetime")
+        stacked = stacked.isel(
+            tmp=~(
+                stacked.swap_dims({"tmp": "datetime"})
+                .get_index("datetime")
+                .duplicated()
+            ),
+        )
+        stacked = stacked.swap_dims({"tmp": "time"}).drop_vars(["tmp", "storm"])
+        stacked["time"] = np.arange(stacked.time.size)
 
-    # Chunk for efficient zarr storage (storm dimension chunked, time kept whole)
-    n_storms = ds.sizes["storm"]
-    chunk_size = min(50, n_storms)
-    ds = ds.chunk({"storm": chunk_size, "time": ds.sizes["time"]})
+        out = unstackable.merge(stacked)
+        out["numobs"] = out.time.size
+        all_ds.append(out)
+    return xr.concat(all_ds, "storm").sortby("sid").reset_coords("sid")
 
-    print(f"Saving preprocessed tracks to {zarr_outpath} ...")
-    ds.to_zarr(str(zarr_outpath), mode="w", consolidated=True)
-    print("Done.")
+
+def preprocess_ibtracs(nc_path, zarr_outpath, overwrite=False):  # NEW
+    """Preprocess a raw IBTrACS netCDF file and save as zarr.  # NEW
+
+    Runs format_clean, trains/loads RF radius models, estimates radii, saves result.  # NEW
+
+    Parameters  # NEW
+    ----------  # NEW
+    nc_path : str or Path  # NEW
+        Path to the raw IBTrACS netCDF file.  # NEW
+    zarr_outpath : str or Path  # NEW
+        Destination zarr directory path.  # NEW
+    overwrite : bool, optional  # NEW
+        If True, overwrite an existing zarr and retrain models. Default False.  # NEW
+
+    """  # NEW
+    import pathlib  # NEW
+
+    zarr_outpath = pathlib.Path(zarr_outpath)  # NEW
+    if zarr_outpath.exists() and not overwrite:  # NEW
+        print(f"Preprocessed zarr already exists at {zarr_outpath}. Skipping.")  # NEW
+        return  # NEW
+
+    print(f"Loading {nc_path} ...")  # NEW
+    raw_ds = xr.open_dataset(str(nc_path))  # NEW
+
+    print("Formatting IBTrACS tracks ...")  # NEW
+    ds = format_clean(raw_ds)  # NEW
+
+    model_dir = pathlib.Path(__file__).parent.parent.parent / "params" / "radius"  # NEW
+    _model_files = ["rmw_to_rad.pkl", "rad_to_rmw.pkl", "rmw.pkl", "cols.pkl"]  # NEW
+    models_exist = all((model_dir / f).exists() for f in _model_files)  # NEW
+    if models_exist and not overwrite:  # NEW
+        print(f"Loading radius models from {model_dir} ...")  # NEW
+        rmw_to_rad, rad_to_rmw, rmw_model, cols = _radius.load_radius_models(model_dir)  # NEW
+    else:  # NEW
+        print("Training radius RF models (this may take a few minutes) ...")  # NEW
+        rmw_to_rad, rad_to_rmw, _, rmw_model, cols = _radius.get_radius_ratio_models(  # NEW
+            ds, model_dir  # NEW
+        )  # NEW
+
+    print("Estimating missing radii ...")  # NEW
+    ds = _radius.estimate_radii(ds, rmw_to_rad, rad_to_rmw, rmw_model, reg_cols=cols)  # NEW
+
+    n_storms = ds.sizes["storm"]  # NEW
+    chunk_size = min(50, n_storms)  # NEW
+    ds = ds.chunk({"storm": chunk_size, "time": ds.sizes["time"]})  # NEW
+
+    print(f"Saving preprocessed tracks to {zarr_outpath} ({n_storms} storms) ...")  # NEW
+    ds.to_zarr(str(zarr_outpath), mode="w", consolidated=True)  # NEW
+    print("Done.")  # NEW

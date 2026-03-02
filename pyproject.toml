@@ -14,6 +14,8 @@ dependencies = [
     "dask",
     "scipy",
     "zarr",
+    "scikit-learn",  # NEW
+    "joblib",  # NEW
 ]
 
 [tool.setuptools.packages.find]

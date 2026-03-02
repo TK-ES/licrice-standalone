@@ -157,12 +157,11 @@ def main():
         overwrite_preproc = not args.no_overwrite_preproc
 
         from licrice.io.ibtracs import preprocess_ibtracs
-        preprocess_ibtracs(
-            nc_path=input_path,
-            zarr_outpath=preproc_zarr,
-            params=params,
-            overwrite=overwrite_preproc,
-        )
+        preprocess_ibtracs(  # NEW
+            nc_path=input_path,  # NEW
+            zarr_outpath=preproc_zarr,  # NEW
+            overwrite=overwrite_preproc,  # NEW
+        )  # NEW
         track_zarr = preproc_zarr
     elif input_path.suffix == ".zarr" or input_path.is_dir():
         track_zarr = input_path
