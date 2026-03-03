@@ -476,6 +476,108 @@ def longitude_to_discontinuous_scale(longitude_array):
     return ((longitude_array + 180) % 360) - 180
 
 
+def interpolate_nans(
+    ds: xr.Dataset,
+    var_list: list = ["storm_radius", "rmstore", "pstore", "v_total"],
+    use_coordinate: bool = True,
+) -> xr.Dataset:
+    """Wrapper of da.interpolate_na applied to specified variables, preserving attrs."""
+    attribs = {i: ds[i].attrs.copy() for i in var_list}
+    ds = ds.assign(
+        ds[var_list].interpolate_na(
+            dim="time",
+            method="linear",
+            use_coordinate=use_coordinate,
+        ),
+    )
+    [ds[var].attrs.update(attrib) for var, attrib in attribs.items()]
+    return ds
+
+
+def drop_leading_and_trailing_nans(ds_storm, var="v_total", time_dim="time"):
+    """Drop leading and trailing nans for each storm in a track dataset. A leading or
+    trailing nan here refers to timesteps either at the beginning or end of a storm time
+    series that have nan values for ``var`` and non nan values for other variables in
+    the trackset such as latitude and longitude. This function will mask all variables
+    at the beginning and end of the storm time series that are not nans where ``var`` is
+    a nan.
+
+    Parameters
+    ----------
+    ds_storm : :class:`xarray.Dataset`
+        track dataset with only a storm and time dimension
+    var : str, optional
+        variable used to assess whether tracks have leading nans
+    time_dim : str, optional
+        temporal dimension over which dropping leading nans
+
+    Returns
+    -------
+    :class:`xarray.Dataset`
+        track dataset with leading nans removed from all tracks
+
+    """
+    # find time index of first and last non nan value
+    valid_times = ds_storm[var].notnull()
+    valid_indices = find_valid_indices(valid_times, time_dim=time_dim)
+
+    vi = np.array([np.arange(valid_times.time.shape[0])] * valid_times.storm.shape[0])
+    if vi.shape[valid_times.dims.index("storm")] != valid_times.storm.shape[0]:
+        vi = np.swapaxes(vi, 0, 1)
+
+    vi = xr.DataArray(vi, coords=valid_times.coords, dims=valid_times.dims)
+    vi = vi.where(vi <= valid_indices.max(dim="valid_time"))
+    vi = vi.where(vi >= valid_indices.min(dim="valid_time"))
+
+    valid_indices_updated = find_valid_indices(vi.notnull(), time_dim=time_dim)
+
+    return filter_valid_indices(
+        ds_storm,
+        valid_indices_updated,
+        pvars=list(ds_storm.data_vars),
+        time_dim=time_dim,
+    )
+
+
+def drop_stationary_storms(
+    ds,
+    lat_var="latstore",
+    lon_var="longstore",
+    time_dim="time",
+):
+    """Drop stationary storms (storms with more than one observations that don't move)
+
+    Parameters
+    ----------
+    ds : :class:`xarray.Dataset`
+        track dataset with a time and storm dimension
+    lat_var : str
+        latitude variable name
+    lon_var : str
+        longitude variable name
+    time_dim : str
+        time dimension name
+
+    Returns
+    -------
+    ds : :class:`xarray.Dataset`
+        `ds` without storms with more than one observation that don't move
+    stationary_storms : :class:`xarray.Dataset`
+        stationary storms in `ds`
+
+    """
+    num_obs = ds[lat_var].notnull().sum(dim=time_dim)
+
+    stationary_storms = (
+        (ds[lat_var] == ds[lat_var].isel({time_dim: 0}))
+        & (ds[lon_var] == ds[lon_var].isel({time_dim: 0}))
+    ).sum(dim=time_dim) == num_obs
+
+    keepers = ~(stationary_storms)
+
+    return ds[{"storm": keepers}], ds[{"storm": ~keepers}]
+
+
 def assess_var_missingness(
     ds,
     var="v_total",
