@@ -35,22 +35,140 @@ import pathlib
 import sys
 
 # ---------------------------------------------------------------------------
-# Built-in domain definitions
-# These match the bounds used to produce the licrice_result_data zarr files.
-# xlim = [lon_min, lon_max], ylim = [lat_min, lat_max]
+# Domain definitions — verbatim from pyTC.settings.Settings.GLOBAL_BBOXES
+# and Settings.CONUS_BBOXES
 # ---------------------------------------------------------------------------
 DOMAINS = {
-    "south_atlantic":          {"xlim": [-60, -38],  "ylim": [-35, -15]},
-    "western_pacific_south":   {"xlim": [98,  174],  "ylim": [0,   25]},
-    "north_atlantic":          {"xlim": [-100, -60], "ylim": [10,  50]},
-    "eastern_pacific":         {"xlim": [-120, -80], "ylim": [10,  35]},
-    "western_pacific_north":   {"xlim": [100,  180], "ylim": [5,   45]},
-    "north_indian":            {"xlim": [50,   100], "ylim": [5,   30]},
-    "south_indian_west":       {"xlim": [30,   90],  "ylim": [-35,  0]},
-    "south_indian_east":       {"xlim": [90,   135], "ylim": [-35,  0]},
-    "australia":               {"xlim": [110,  160], "ylim": [-35, -10]},
-    "south_pacific":           {"xlim": [155,  210], "ylim": [-35,  -5]},
+    "south_atlantic": {
+        "long_name": "Western coasts of the South Atlantic",
+        "description": "Southern Coast of Brazil and Uruguay",
+        "xlim": [-60, -38],
+        "ylim": [-35, -15],
+    },
+    "east_pacific_north": {
+        "long_name": "Northern coasts of the Eastern Pacific",
+        "description": "Western Canada and Southern Alaska",
+        "xlim": [-180, -125],
+        "ylim": [50, 64],
+    },
+    "east_pacific_southwest": {
+        "long_name": "Southwestern islands of the Eastern Pacific",
+        "description": "Hawaii and friends",
+        "xlim": [-180, -154],
+        "ylim": [0, 30],
+    },
+    "north_america_northeast": {
+        "long_name": "Northeastern North America",
+        "description": "Eastern Canada and the Northeastern United States",
+        "xlim": [-90, -52],
+        "ylim": [36, 64],
+    },
+    "north_atlantic_southwest": {
+        "long_name": "Southwestern North Atlantic Ocean",
+        "description": "Gulf of Mexico, Carribean Sea",
+        "xlim": [-90, -52],
+        "ylim": [5, 36],
+    },
+    "north_america_south": {
+        "long_name": "Southern North America",
+        "description": "Mexico and Southwestern United States",
+        "xlim": [-123, -90],
+        "ylim": [8, 36],
+    },
+    "north_america_west": {
+        "long_name": "Western North America",
+        "description": "Western United States",
+        "xlim": [-125, -90],
+        "ylim": [36, 50],
+    },
+    "north_atlantic_east": {
+        "long_name": "Northeastern Atlantic Ocean",
+        "description": "West Africa, Western Europe, Iceland",
+        "xlim": [-33, 2],
+        "ylim": [6, 68],
+    },
+    "western_pacific_south": {
+        "long_name": "Southwestern Pacific Ocean",
+        "description": "Gulf of Thailand, South China Sea, Phillipine Sea",
+        "xlim": [98, 174],
+        "ylim": [0, 25],
+    },
+    "western_pacific": {
+        "long_name": "Western Pacific Ocean",
+        "description": (
+            "East China Sea, Yellow Sea, Sea of Japan, Southern Sea of Okhotsk"
+        ),
+        "xlim": [98, 155],
+        "ylim": [25, 50],
+    },
+    "western_pacific_north": {
+        "long_name": "Northwestern Pacific Ocean",
+        "description": "Sea of Okhotsk, Bering Sea",
+        "xlim": [98, 180],
+        "ylim": [50, 65],
+    },
+    "south_pacific_central": {
+        "long_name": "Central South Pacific Ocean",
+        "description": "Western Polynesian Island Nations (minus New Zealand)",
+        "xlim": [-180, -170],
+        "ylim": [-51, 0],
+    },
+    "south_pacific_northwest": {
+        "long_name": "Northwestern South Pacific Ocean",
+        "description": "Southern Indonesia, Papua New Guinea, Northern Australia",
+        "xlim": [95, 180],
+        "ylim": [-25, 0],
+    },
+    "south_pacific_southwest": {
+        "long_name": "Southwestern South Pacific Ocean",
+        "description": "Southern Australia and New Zealand",
+        "xlim": [112, 180],
+        "ylim": [-55, -25],
+    },
+    "south_pacific_east": {
+        "long_name": "Eastern South Pacific Ocean",
+        "description": "Eastern Polynesian Islands",
+        "xlim": [-170, -107],
+        "ylim": [-30, 0],
+    },
+    "south_indian": {
+        "long_name": "South Indian Ocean",
+        "description": "Southern Africa plus Islands in the South Indian Ocean",
+        "xlim": [13, 78],
+        "ylim": [-51, 0],
+    },
+    "north_indian": {
+        "long_name": "North Indian Ocean",
+        "description": "Bay of Bengal, Arabian Sea, Laccadive Sea",
+        "xlim": [40, 98],
+        "ylim": [0, 35],
+    },
+    "conus": {
+        "long_name": "Atlantic and Gulf Coasts",
+        "description": "Atlantic and Gulf Coasts",
+        "xlim": [-125, -66],
+        "ylim": [24, 50],
+    },
 }
+
+# ---------------------------------------------------------------------------
+# Output metadata — matches coastal-core run-licrice-hist.ipynb
+# ---------------------------------------------------------------------------
+HISTORY = """version 0.0 : Starting dataset changelog. Reduced global domain sizes to reduce output dataset sizes.
+
+version 0.1 : Clipped v_circular at 0, change rotation direction in southern hemisphere, modify translational velocity scaling factor to account for negative lats, ensure modeled wind speed never exceeds max observed wind speed,change global domain naming conventions and improve documentation.
+
+version 0.4 : Use pixel step rather than time step data. Adjust vortex center to account for grid movement. Improved estimation of RMW and storm radius by (a) using a central-pressure based estimate when available, and (b) bias correcting storm-level observations based on reference times when obs are available.
+
+version 0.5 : Some fixes to the ensemble track inputs to remove bugs dealing with ramping wind speed over land. Made parallelization strategy more efficient (no change to results)
+
+version 1.0: Save list of tracksets with no tracks in them to confirm that all have been processed. Run all ensembles in a trackset in a single zarr rather than separate zarrs. Update pipeilne for efficiency improvements. Use trackset 20220125_2 with bugfix to track jittering algorithm, which updates ensembles>0.
+
+version 1.1: Add additional intermediate check-files to try to ensure any workers dying mid-task are not affecting the number of outputs that are written."""
+
+NOTES = "Historical IBTrACS storm track wind field summary statistics."
+AUTHOR = "Ian Bolliger"
+CONTACT = "ian@reask.earth"
 
 
 def load_params(params_path=None):
@@ -120,8 +238,8 @@ def main():
 
     if args.list_domains:
         print("Built-in domains:")
-        for name, bounds in DOMAINS.items():
-            print(f"  {name:30s}  xlim={bounds['xlim']}  ylim={bounds['ylim']}")
+        for name, d in DOMAINS.items():
+            print(f"  {name:30s}  xlim={d['xlim']}  ylim={d['ylim']}")
         sys.exit(0)
 
     # ------------------------------------------------------------------ #
@@ -171,6 +289,7 @@ def main():
     # ------------------------------------------------------------------ #
     # Find valid tracks for each domain, then run LICRICE
     # ------------------------------------------------------------------ #
+    import pandas as pd
     from licrice.licrice.preprocess import find_valid_tracks
     from licrice.licrice.run import run_licrice_on_trackset
 
@@ -199,13 +318,18 @@ def main():
             print(f"  Output already exists at {outpath} — skipping.")
             continue
 
+        xlim = DOMAINS[domain]["xlim"]
+        ylim = DOMAINS[domain]["ylim"]
         attr_dict = {
+            "author": AUTHOR,
+            "contact": CONTACT,
+            "updated": pd.Timestamp.now(tz="US/Pacific").strftime("%c"),
+            "method": f"`licrice` for the {domain} domain (xlim:{xlim}, ylim:{ylim})",
+            "history": HISTORY,
+            "notes": NOTES,
             "licrice_domain": domain,
-            "method": (
-                f"`licrice` for the {domain} domain "
-                f"(xlim:{DOMAINS[domain]['xlim']}, ylim:{DOMAINS[domain]['ylim']})"
-            ),
-            "notes": "Historical storm track wind field summary statistics",
+            "basin_long": DOMAINS[domain]["long_name"],
+            "basin_desc": DOMAINS[domain]["description"],
         }
 
         print(f"  Running LICRICE → {outpath}")
@@ -214,8 +338,8 @@ def main():
             valid_storms=info["valid_tracks"],
             start_dates=info["start_dates"],
             params=params,
-            xlim=DOMAINS[domain]["xlim"],
-            ylim=DOMAINS[domain]["ylim"],
+            xlim=xlim,
+            ylim=ylim,
             outpath=outpath,
             tmppath=tmppath,
             checkfile_path=checkfile,
