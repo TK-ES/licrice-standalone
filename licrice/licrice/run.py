@@ -1,11 +1,16 @@
-import shutil
+"""LICRICE run functions.
+
+Extracted from pyTC/licrice/run.py. rhg_compute_tools.gcs dependency removed.
+"""
+
+import shutil  # NEW
 
 import dask.config
 import numpy as np
 import xarray as xr
 
-from licrice import spatial
-from licrice.utilities import check_finished_zarr_workflow
+from licrice import spatial  # NEW
+from licrice.utilities import check_finished_zarr_workflow  # NEW
 from . import dist_funcs
 from . import utils as lutils
 from .preprocess import init_output_zarr, prep_tracks

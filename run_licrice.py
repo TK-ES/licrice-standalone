@@ -1,28 +1,27 @@
 #!/usr/bin/env python
-"""Command-line script to run the LICRICE wind field model on IBTrACS data.
+"""Command-line script to run LICRICE on IBTrACS
 
-Usage examples
---------------
-# Run two domains, auto-preprocessing the raw IBTrACS netCDF first:
+Usage ex.
+# Run two domains, preprocessing the raw IBTrACS netCDF into a zarr
 python run_licrice.py \\
     --input /path/to/IBTrACS.ALL.v04r01.nc \\
     --domain south_atlantic western_pacific_south \\
     --outdir /path/to/output/
 
-# Run all built-in domains:
+# Run all domains
 python run_licrice.py \\
     --input /path/to/IBTrACS.ALL.v04r01.nc \\
     --domain all \\
     --outdir /path/to/output/
 
-# Skip re-preprocessing if the zarr already exists:
+# Skip preprocessing if we already have the zarr
 python run_licrice.py \\
     --input /path/to/IBTrACS.ALL.v04r01.nc \\
     --domain south_atlantic \\
     --outdir /path/to/output/ \\
     --no-overwrite-preproc
 
-# Use an already-preprocessed zarr directly:
+# Use an already preprocessed zarr
 python run_licrice.py \\
     --input /path/to/ibtracs_preprocessed.zarr \\
     --domain south_atlantic \\
@@ -34,10 +33,8 @@ import json
 import pathlib
 import sys
 
-# ---------------------------------------------------------------------------
-# Domain definitions — verbatim from pyTC.settings.Settings.GLOBAL_BBOXES
-# and Settings.CONUS_BBOXES
-# ---------------------------------------------------------------------------
+
+# Domain definitions from pyTC.settings.Settings.GLOBAL_BBOXES and Settings.CONUS_BBOXES
 DOMAINS = {
     "south_atlantic": {
         "long_name": "Western coasts of the South Atlantic",
@@ -151,24 +148,14 @@ DOMAINS = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# Output metadata — matches coastal-core run-licrice-hist.ipynb
-# ---------------------------------------------------------------------------
-HISTORY = """version 0.0 : Starting dataset changelog. Reduced global domain sizes to reduce output dataset sizes.
 
-version 0.1 : Clipped v_circular at 0, change rotation direction in southern hemisphere, modify translational velocity scaling factor to account for negative lats, ensure modeled wind speed never exceeds max observed wind speed,change global domain naming conventions and improve documentation.
+# Output metadata matches coastal-core run-licrice-hist.ipynb
 
-version 0.4 : Use pixel step rather than time step data. Adjust vortex center to account for grid movement. Improved estimation of RMW and storm radius by (a) using a central-pressure based estimate when available, and (b) bias correcting storm-level observations based on reference times when obs are available.
+HISTORY = """NEEED TO CHANGE THIS"""
 
-version 0.5 : Some fixes to the ensemble track inputs to remove bugs dealing with ramping wind speed over land. Made parallelization strategy more efficient (no change to results)
-
-version 1.0: Save list of tracksets with no tracks in them to confirm that all have been processed. Run all ensembles in a trackset in a single zarr rather than separate zarrs. Update pipeilne for efficiency improvements. Use trackset 20220125_2 with bugfix to track jittering algorithm, which updates ensembles>0.
-
-version 1.1: Add additional intermediate check-files to try to ensure any workers dying mid-task are not affecting the number of outputs that are written."""
-
-NOTES = "Historical IBTrACS storm track wind field summary statistics."
-AUTHOR = "Ian Bolliger"
-CONTACT = "ian@reask.earth"
+NOTES = "NEED TO CHANGE THIS"
+AUTHOR = "NEED TO CHANGE THIS"
+CONTACT = "NEED TO CHANGE THIS"
 
 
 def load_params(params_path=None):
@@ -242,9 +229,8 @@ def main():
             print(f"  {name:30s}  xlim={d['xlim']}  ylim={d['ylim']}")
         sys.exit(0)
 
-    # ------------------------------------------------------------------ #
+    
     # Resolve domains
-    # ------------------------------------------------------------------ #
     if len(args.domain) == 1 and args.domain[0].lower() == "all":
         selected_domains = list(DOMAINS.keys())
     else:
@@ -261,9 +247,8 @@ def main():
 
     params = load_params(args.params)
 
-    # ------------------------------------------------------------------ #
-    # Resolve track input path (preprocess .nc → zarr if needed)
-    # ------------------------------------------------------------------ #
+   
+    # Resolve track input path (preprocess .nc to zarr if needed)
     input_path = pathlib.Path(args.input)
 
     if input_path.suffix == ".nc":
@@ -286,9 +271,8 @@ def main():
     else:
         parser.error(f"--input must be a .nc file or a .zarr directory, got: {input_path}")
 
-    # ------------------------------------------------------------------ #
+    
     # Find valid tracks for each domain, then run LICRICE
-    # ------------------------------------------------------------------ #
     import pandas as pd
     from licrice.licrice.preprocess import find_valid_tracks
     from licrice.licrice.run import run_licrice_on_trackset

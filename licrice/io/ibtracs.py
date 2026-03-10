@@ -1,9 +1,15 @@
+"""IBTrACS I/O for LICRICE.
+
+Extracted from pyTC/io/tracks/ibtracs.py. Settings/GCS dependencies removed.
+download() signature changed to explicit url/outdir params. preprocess_ibtracs() is new.
+"""
+
 import numpy as np
 import requests
 import xarray as xr
 from bs4 import BeautifulSoup
 
-from licrice import tracks, utilities
+from licrice import tracks, utilities  # NEW
 from licrice.tracks import radius as _radius  # NEW
 
 # constructed using:
@@ -38,19 +44,19 @@ def download(url, outdir):
         Directory to save downloaded files.
 
     """
-    import pathlib
+    import pathlib  # NEW
 
-    outdir = pathlib.Path(outdir)
-    download_url = requests.get(url)
+    outdir = pathlib.Path(outdir)  # NEW
+    download_url = requests.get(url)  # NEW
     soup = BeautifulSoup(download_url.text, features="html.parser")
     links = soup.findAll("a")
 
     for link in links:
         if ".nc" in link["href"] or ".txt" in link["href"]:
-            loc = outdir / str(link["href"])
+            loc = outdir / str(link["href"])  # NEW
             print(f"Downloading {link['href']} to {loc}")
             with loc.open("wb") as f:
-                f.write(requests.get(url + link["href"]).content)
+                f.write(requests.get(url + link["href"]).content)  # NEW
 
 
 def format_standard(
@@ -519,52 +525,52 @@ def _combine_tracks(ds, sids_groups):
 
 
 def preprocess_ibtracs(nc_path, zarr_outpath, overwrite=False):  # NEW
-    """Preprocess a raw IBTrACS netCDF file and save as zarr.  # NEW
+    """IBTrACS netCDF file to zarr.
 
-    Runs format_clean, trains/loads RF radius models, estimates radii, saves result.  # NEW
+    Runs format_clean, trains/loads RF radius models, estimates radii, saves result.
 
-    Parameters  # NEW
-    ----------  # NEW
-    nc_path : str or Path  # NEW
-        Path to the raw IBTrACS netCDF file.  # NEW
-    zarr_outpath : str or Path  # NEW
-        Destination zarr directory path.  # NEW
-    overwrite : bool, optional  # NEW
-        If True, overwrite an existing zarr and retrain models. Default False.  # NEW
+    Parameters
+    ----------
+    nc_path : str or Path
+        Path to the raw IBTrACS netCDF file.
+    zarr_outpath : str or Path
+        Destination zarr directory path.
+    overwrite : bool, optional
+        If True, overwrite an existing zarr and retrain models. Default False.
 
-    """  # NEW
-    import pathlib  # NEW
+    """
+    import pathlib
 
-    zarr_outpath = pathlib.Path(zarr_outpath)  # NEW
-    if zarr_outpath.exists() and not overwrite:  # NEW
-        print(f"Preprocessed zarr already exists at {zarr_outpath}. Skipping.")  # NEW
-        return  # NEW
+    zarr_outpath = pathlib.Path(zarr_outpath)
+    if zarr_outpath.exists() and not overwrite:
+        print(f"Preprocessed zarr already exists at {zarr_outpath}. Skipping.")
+        return
 
-    print(f"Loading {nc_path} ...")  # NEW
-    raw_ds = xr.open_dataset(str(nc_path))  # NEW
+    print(f"Loading {nc_path} ...")
+    raw_ds = xr.open_dataset(str(nc_path))
 
-    print("Formatting IBTrACS tracks ...")  # NEW
-    ds = format_clean(raw_ds)  # NEW
+    print("Formatting IBTrACS tracks ...")
+    ds = format_clean(raw_ds)
 
-    model_dir = pathlib.Path(__file__).parent.parent.parent / "params" / "radius"  # NEW
-    _model_files = ["rmw_to_rad.pkl", "rad_to_rmw.pkl", "rmw.pkl", "cols.pkl"]  # NEW
-    models_exist = all((model_dir / f).exists() for f in _model_files)  # NEW
-    if models_exist and not overwrite:  # NEW
-        print(f"Loading radius models from {model_dir} ...")  # NEW
-        rmw_to_rad, rad_to_rmw, rmw_model, cols = _radius.load_radius_models(model_dir)  # NEW
-    else:  # NEW
-        print("Training radius RF models (this may take a few minutes) ...")  # NEW
-        rmw_to_rad, rad_to_rmw, _, rmw_model, cols = _radius.get_radius_ratio_models(  # NEW
-            ds, model_dir  # NEW
-        )  # NEW
+    model_dir = pathlib.Path(__file__).parent.parent.parent / "params" / "radius"
+    _model_files = ["rmw_to_rad.pkl", "rad_to_rmw.pkl", "rmw.pkl", "cols.pkl"]
+    models_exist = all((model_dir / f).exists() for f in _model_files)
+    if models_exist and not overwrite:
+        print(f"Loading radius models from {model_dir} ...")
+        rmw_to_rad, rad_to_rmw, rmw_model, cols = _radius.load_radius_models(model_dir)
+    else:
+        print("Training radius RF models (this may take a few minutes) ...")
+        rmw_to_rad, rad_to_rmw, _, rmw_model, cols = _radius.get_radius_ratio_models(
+            ds, model_dir
+        )
 
-    print("Estimating missing radii ...")  # NEW
-    ds = _radius.estimate_radii(ds, rmw_to_rad, rad_to_rmw, rmw_model, reg_cols=cols)  # NEW
+    print("Estimating missing radii ...")
+    ds = _radius.estimate_radii(ds, rmw_to_rad, rad_to_rmw, rmw_model, reg_cols=cols)
 
-    n_storms = ds.sizes["storm"]  # NEW
-    chunk_size = min(50, n_storms)  # NEW
-    ds = ds.chunk({"storm": chunk_size, "time": ds.sizes["time"]})  # NEW
+    n_storms = ds.sizes["storm"]
+    chunk_size = min(50, n_storms)
+    ds = ds.chunk({"storm": chunk_size, "time": ds.sizes["time"]})
 
-    print(f"Saving preprocessed tracks to {zarr_outpath} ({n_storms} storms) ...")  # NEW
-    ds.to_zarr(str(zarr_outpath), mode="w", consolidated=True)  # NEW
-    print("Done.")  # NEW
+    print(f"Saving preprocessed tracks to {zarr_outpath} ({n_storms} storms) ...")
+    ds.to_zarr(str(zarr_outpath), mode="w", consolidated=True)
+    print("Done.")

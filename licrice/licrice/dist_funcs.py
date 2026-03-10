@@ -1,9 +1,14 @@
+"""Distance calculation functions for LICRICE.
+
+Extracted from pyTC/licrice/dist_funcs.py.
+"""
+
 from math import ceil
 
 import numpy as np
 import xarray as xr
 
-from licrice import spatial
+from licrice import spatial  # NEW
 
 from .utils import apply_tanh_ramp
 from .vortex_funcs import _get_modified_rankine_vortex, _get_rankine_alpha

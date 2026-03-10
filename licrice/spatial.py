@@ -1,8 +1,6 @@
 """Spatial utility functions for LICRICE.
-
-Extracted from pyTC.spatial with only the functions needed by the LICRICE wind model.
-The climada dependency has been replaced with an inline implementation of
-latlon_to_geosph_vector.
+Extracted from pyTC.spatial
+The climada dependency replaced with an inline implementation of latlon_to_geosph_vector.
 """
 
 from functools import wraps
@@ -16,7 +14,7 @@ EARTH_RADIUS = 6371.009
 LAT_TO_M = 111131.745
 
 
-def _latlon_to_geosph_vector(lat, lon, rad=False, basis=False):
+def _latlon_to_geosph_vector(lat, lon, rad=False, basis=False):  # NEW
     """Convert lat/lon to 3D unit vector on geosphere.
 
     Replaces climada.util.coordinates.latlon_to_geosph_vector.

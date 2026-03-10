@@ -4,13 +4,7 @@ LICRICE calculates two wind hazard metrics over a spatial grid:
   - MAXS: Maximum sustained wind speed (m/s)
   - PDDI: Power Dissipation Density Index (m^3/s^2)
 
-Usage:
-  1. Provide a zarr trackset (IBTrACS or Emanuel synthetic)
-  2. Define a bounding box (xlim, ylim)
-  3. Load LICRICE parameters
-  4. Run the model
-
-This example creates synthetic test data and runs LICRICE on it.
+This is synthetic data!
 """
 
 import json

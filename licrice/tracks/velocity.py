@@ -1,8 +1,13 @@
+"""Track velocity functions for LICRICE.
+
+Extracted from pyTC/tracks/velocity.py.
+"""
+
 import numpy as np
 import xarray as xr
 
-from licrice.spatial import great_circle_dist
-from licrice.utilities import convert_units
+from licrice.spatial import great_circle_dist  # NEW
+from licrice.utilities import convert_units  # NEW
 from . import utils as tutils
 
 # Get conversion factor to convert max wind speed averaging period to 1 minute.

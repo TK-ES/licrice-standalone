@@ -1,10 +1,16 @@
+"""LICRICE preprocessing functions.
+
+Extracted from pyTC/licrice/preprocess.py. clawpack.geoclaw.units dependency replaced
+by licrice.utilities.geoclaw_convert.
+"""
+
 import dask.array as da
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from licrice import spatial, testing, tracks
-from licrice.utilities import geoclaw_convert
+from licrice import spatial, testing, tracks  # NEW
+from licrice.utilities import geoclaw_convert  # NEW
 from .utils import get_output_grid
 
 # variables necessary to hold onto for licrice

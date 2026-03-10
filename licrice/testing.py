@@ -1,6 +1,5 @@
 """Testing utility functions for LICRICE.
-
-Extracted from pyTC.testing with only the functions needed by the LICRICE wind model.
+Extracted from pyTC.testing
 """
 
 from licrice.tracks import utils as tutils

@@ -1,7 +1,12 @@
+"""Vortex profile functions for LICRICE.
+
+Extracted from pyTC/licrice/vortex_funcs.py.
+"""
+
 import numpy as np
 import xarray as xr
 
-from licrice.spatial import coriolis
+from licrice.spatial import coriolis  # NEW
 
 
 def inv_modified_rankine(vmax, rmw, alpha, speed):

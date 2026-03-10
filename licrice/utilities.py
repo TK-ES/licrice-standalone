@@ -1,11 +1,17 @@
-"""Utility functions for LICRICE."""  # NEW
+"""Utility functions for LICRICE.
+
+Extracted from pyTC/utilities.py. pint/clawpack dependencies replaced with a
+lookup-table approach. convert_units, geoclaw_convert, and _UNIT_CONVERSIONS are new.
+_smooth_interp_w_other_data_inner, smooth_fill, bin_data, and
+check_finished_zarr_workflow are verbatim from coastal-core (GCS checks simplified).
+"""
 
 import numpy as np
 import xarray as xr
 
 
-# Simple unit conversion lookup (replaces pint/clawpack dependency)
-_UNIT_CONVERSIONS = {
+# unit conversion (replaces pint/clawpack dependency)  # NEW
+_UNIT_CONVERSIONS = {  # NEW
     ("kts", "m/s"): 0.514444,
     ("m/s", "kts"): 1 / 0.514444,
     ("km", "m"): 1000.0,
@@ -19,20 +25,14 @@ _UNIT_CONVERSIONS = {
 }
 
 
-def convert_units(data, from_to):
-    """Converts data from one unit to another.
-
+def convert_units(data, from_to):  # NEW
+    """data conversion
+    
     Parameters
-    ----------
-    data : scalar or array
-        Original value to convert from
-    from_to : tuple
-        2-tuple of strings, as (Units to convert from, Units to convert to)
-
+    data : scalar or array, original value to convert from
+    from_to : tuple, 2-tuple of strings, as (Units to convert from, Units to convert to)
     Returns
-    -------
     converted : scalar or array
-
     """
     key = (from_to[0].lower(), from_to[1].lower())
     if key not in _UNIT_CONVERSIONS:
@@ -40,10 +40,10 @@ def convert_units(data, from_to):
     return data * _UNIT_CONVERSIONS[key]
 
 
-def geoclaw_convert(data, old_units, new_units):
-    """Simple unit conversion replacing clawpack.geoclaw.units.convert.
+def geoclaw_convert(data, old_units, new_units):  # NEW
+    """unit conversion replacing clawpack.geoclaw.units.convert.
 
-    Supports km<->m and hPa/mb<->Pa conversions needed by LICRICE.
+    Supports km<->m and hPa/mb<->Pa conversions needed by LICRICE
     """
     key = (old_units.lower(), new_units.lower())
     if key not in _UNIT_CONVERSIONS:
@@ -89,7 +89,7 @@ def smooth_fill(
     da1_in,
     da2_in,
     fill_all_null=True,
-    time_dim="time",  # NEW
+    time_dim="time",
     other_dim="storm",
     interpolate=False,
 ):
